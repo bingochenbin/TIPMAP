@@ -1,0 +1,69 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments and local Python environments
+.venv/
+venv/
+env/
+ENV/
+
+# Build and packaging artifacts
+build/
+dist/
+*.egg-info/
+pip-wheel-metadata/
+
+# Local IDE/editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Codex/local agent state
+.agents/
+.codex/
+
+# Runtime logs and temporary files
+*.log
+*.tmp
+*.temp
+tmp/
+temp/
+
+# TIPMAP workflow outputs and large generated intermediates
+out.work/
+*.tipmap_work/
+tipmap_classify_work/
+te_annotation_work/
+*.fa.fai
+*.fasta.fai
+*.fna.fai
+*.vcf.gz.tbi
+*.bcf.csi
+
+# Generated annotation/classification outputs
+*.EDTA*/
+*.TEanno*/
+*.mod.EDTA.raw/
+*.mod.EDTA.TElib.fa
+*.mod.EDTA.TEanno.gff3
+panpop_allele_vs_te.tsv
+panpop_alleles.fa
+te_fragments.fa
+
+# OS metadata
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# docs
+docs/TIPMAP_pipeline*svg
+docs/*R

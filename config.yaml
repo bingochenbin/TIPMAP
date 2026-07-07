@@ -1,0 +1,9 @@
+genome: null
+vcf: null
+te_annotation:
+  tool: null
+  threads: 1
+tip_calling:
+  min_te_coverage: 0.60
+  min_identity: 80.0
+  min_te_covered_bp: 40
