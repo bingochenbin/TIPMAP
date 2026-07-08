@@ -9,6 +9,8 @@ structural variation datasets.
 The current workflow is designed for PanPop-style merged SV VCFs plus
 pairwise genome-to-reference VCFs. Only `INS` and `DEL` records are used.
 
+![image-20260708172725515](README.assets/TIPMAP_main_horizontal.png)
+
 ## Design Motivation
 
 Large, TE-rich genomes such as wheat make whole-genome TE annotation for every

@@ -61,6 +61,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", required=True, help="Final TE annotation TSV path.")
     parser.add_argument(
         "--workdir",
+        required=True,
         help="Working directory for de-duplicated FASTA, chromosome splits, and EDTA outputs.",
     )
     parser.add_argument("--seqkit", default="seqkit", help="seqkit executable path.")
@@ -262,17 +263,27 @@ def run_edta_by_chromosome(
 
 
 def find_edta_gff3(workdir: str | Path, split_fasta: str | Path) -> Path | None:
-    """Find the most likely EDTA GFF3 output for one split."""
+    """Find the most likely top-level EDTA GFF3 output for one split."""
 
-    work_path = Path(workdir)
-    candidates = sorted(work_path.rglob("*EDTA*.gff3"))
-    if not candidates:
-        candidates = sorted(work_path.rglob("*TEanno*.gff3"))
-    if not candidates:
-        candidates = sorted(work_path.rglob("*.gff3"))
-    if not candidates:
+    split_path = Path(split_fasta)
+    search_dirs = [Path(workdir)]
+    if split_path.parent not in search_dirs:
+        search_dirs.append(split_path.parent)
+
+    for search_dir in search_dirs:
+        found = _find_top_level_edta_gff3(search_dir, split_path.name)
+        if found is not None:
+            return found
+    return None
+
+
+def _find_top_level_edta_gff3(directory: Path, split_stem: str) -> Path | None:
+    for pattern in ("*EDTA.TEanno.gff3", "*TEanno*.gff3", "*EDTA*.gff3", "*.gff3"):
+        candidates = sorted(path for path in directory.glob(pattern) if path.is_file())
+        if candidates:
+            break
+    else:
         return None
-    split_stem = Path(split_fasta).name
     preferred = [path for path in candidates if split_stem in path.name]
     return preferred[0] if preferred else candidates[0]
 
@@ -492,6 +503,8 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
 
 
 

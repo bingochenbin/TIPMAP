@@ -337,9 +337,24 @@ def read_te_metadata(path: str | Path | None) -> dict[str, TEMetadata]:
             )
             if seq_id:
                 metadata[seq_id] = item
+                fragment_key = te_fragment_metadata_key(seq_id, item.start, item.end)
+                if fragment_key:
+                    metadata[fragment_key] = item
             if md5:
                 metadata[md5] = item
     return metadata
+
+
+def te_fragment_metadata_key(seq_id: str, start: str, end: str) -> str:
+    """Return the metadata key shared by extracted TE fragment BLAST subjects."""
+
+    if not seq_id or not start or not end:
+        return ""
+    left = _parse_int(start)
+    right = _parse_int(end)
+    if left is None or right is None:
+        return ""
+    return "%s::te:%d-%d" % (seq_id, min(left, right), max(left, right))
 
 
 def read_blast_hits(path: str | Path, te_metadata: dict[str, TEMetadata] | None = None) -> dict[str, list[TEHit]]:
@@ -392,6 +407,9 @@ def te_metadata_for_subject(subject_id: str, metadata: dict[str, TEMetadata]) ->
     if subject_id in metadata:
         return metadata[subject_id]
     if "::te:" in subject_id:
+        fragment_key = subject_id.rsplit(":", 1)[0]
+        if fragment_key in metadata:
+            return metadata[fragment_key]
         source_id = subject_id.split("::te:", 1)[0]
         if source_id in metadata:
             return metadata[source_id]
@@ -912,6 +930,7 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
 
 
 

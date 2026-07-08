@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import contextlib
 import importlib.util
@@ -63,23 +63,51 @@ class ParseEdtaGff3ScriptTests(unittest.TestCase):
         self.assertTrue(lines[1].startswith("sv1|alt"))
         self.assertTrue(lines[2].startswith("sv2|alt"))
 
-    def test_edta_dir_recursively_discovers_gff3(self) -> None:
+    def test_edta_dir_discovers_only_top_level_gff3(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)
-            nested = base / "edta" / "Chr1A"
+            edta_dir = base / "edta"
+            nested = edta_dir / "Chr1A"
             nested.mkdir(parents=True)
-            gff3 = nested / "result.EDTA.TEanno.gff3"
+            nested_gff3 = nested / "nested.EDTA.TEanno.gff3"
+            top_gff3 = edta_dir / "result.EDTA.TEanno.gff3"
             output = base / "te.tsv"
-            gff3.write_text(
+            nested_gff3.write_text(
+                "sv_nested|alt|GenomeA|Chr1A|1|1|INS|md5n\tEDTA\trepeat_region\t1\t4\t.\t-\t.\tName=helitron|Helitron\n",
+                encoding="utf-8",
+            )
+            top_gff3.write_text(
                 "sv1|alt|GenomeA|Chr1A|1|1|INS|md5a\tEDTA\trepeat_region\t1\t4\t.\t-\t.\tName=helitron|Helitron\n",
                 encoding="utf-8",
             )
 
-            paths = parse_edta_gff3_script.collect_gff3_paths([], [base / "edta"])
-            count = parse_edta_gff3_script.run_parse_workflow(edta_dirs=[base / "edta"], output=output)
+            paths = parse_edta_gff3_script.collect_gff3_paths([], [edta_dir])
+            count = parse_edta_gff3_script.run_parse_workflow(edta_dirs=[edta_dir], output=output)
+            lines = output.read_text(encoding="utf-8").strip().splitlines()
 
-        self.assertEqual(paths, [gff3])
+        self.assertEqual(paths, [top_gff3])
         self.assertEqual(count, 1)
+        self.assertTrue(lines[1].startswith("sv1|alt"))
+
+    def test_edta_dir_uses_first_nonempty_priority_pattern(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            edta_dir = base / "edta"
+            edta_dir.mkdir()
+            preferred = edta_dir / "preferred.EDTA.gff3"
+            fallback = edta_dir / "fallback.gff3"
+            preferred.write_text(
+                "sv1|alt|GenomeA|Chr1A|1|1|INS|md5a\tEDTA\trepeat_region\t1\t4\t.\t+\t.\tClassification=LTR/Gypsy\n",
+                encoding="utf-8",
+            )
+            fallback.write_text(
+                "sv2|alt|GenomeA|Chr2A|1|1|INS|md5b\tEDTA\trepeat_region\t1\t4\t.\t+\t.\tClassification=DNA/TIR\n",
+                encoding="utf-8",
+            )
+
+            paths = parse_edta_gff3_script.collect_gff3_paths([], [edta_dir])
+
+        self.assertEqual(paths, [preferred])
 
     def test_main_requires_input_source(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -101,6 +129,7 @@ class ParseEdtaGff3ScriptTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
 

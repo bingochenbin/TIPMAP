@@ -14,6 +14,7 @@ from classify_te_sv import (
     iter_te_fragments,
     process_vcf_record_line,
     read_blast_hits,
+    read_te_metadata,
     run_classification_workflow,
     rewrite_genotype,
     union_interval_length,
@@ -99,6 +100,31 @@ class ClassifyTeSvTests(unittest.TestCase):
         self.assertEqual(hits[allele_md5][0].family, "TIR")
         self.assertEqual(hits[allele_md5][0].superfamily, "DNA")
         self.assertEqual(hits[allele_md5][0].metadata.attributes if hits[allele_md5][0].metadata else "", "ID=y")
+
+    def test_read_blast_hits_prefers_exact_te_fragment_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            te = base / "te.tsv"
+            blast = base / "blast.tsv"
+            seq_id = "source|alt|panpop|Chr1|1|1|INS|abc"
+            allele_md5 = sequence_md5("A" * 120)
+            te.write_text(
+                "seq_id\tmd5\tchrom\tstart\tend\tstrand\tsource\ttype\tfamily\tsuperfamily\tattributes\n"
+                "%s\tabc\tChr1\t1\t40\t+\tEDTA\trepeat_region\tGypsy\tLTR\tID=first\n"
+                "%s\tabc\tChr1\t60\t100\t+\tEDTA\trepeat_region\tTIR\tDNA\tID=second\n" % (seq_id, seq_id),
+                encoding="utf-8",
+            )
+            blast.write_text(
+                "%s\t%s::te:1-40:frag1\t91\t40\t0\t0\t1\t40\t1\t40\t1e-10\t120\n"
+                "%s\t%s::te:60-100:frag2\t92\t41\t0\t0\t60\t100\t1\t41\t1e-10\t120\n" % (allele_md5, seq_id, allele_md5, seq_id),
+                encoding="utf-8",
+            )
+
+            metadata = read_te_metadata(te)
+            hits = read_blast_hits(blast, metadata)[allele_md5]
+
+        self.assertEqual([hit.family for hit in hits], ["Gypsy", "TIR"])
+        self.assertEqual([hit.metadata.attributes if hit.metadata else "" for hit in hits], ["ID=first", "ID=second"])
 
     def test_process_multiallelic_ins_retains_only_te_alt_sequences(self) -> None:
         ref = "A"
@@ -229,6 +255,8 @@ class ClassifyTeSvTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
 
 
 

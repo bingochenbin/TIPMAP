@@ -9,6 +9,7 @@ from typing import Sequence
 from annotate_te import (
     SplitFasta,
     chromosome_from_tipmap_header,
+    find_edta_gff3,
     md5_from_tipmap_header,
     parse_edta_gff3,
     run_annotation_workflow,
@@ -140,6 +141,52 @@ class AnnotateTeTests(unittest.TestCase):
         self.assertEqual(calls[0][anno_index + 1], "1")
         self.assertTrue(any("--anno 0" in message for message in logs.output))
 
+    def test_find_edta_gff3_searches_top_level_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            nested = base / "nested"
+            nested.mkdir()
+            split = base / "Chr1.fa"
+            split.write_text(">x\nA\n", encoding="utf-8")
+            nested_gff3 = nested / "nested.EDTA.TEanno.gff3"
+            top_gff3 = base / "result.EDTA.TEanno.gff3"
+            nested_gff3.write_text("##gff-version 3\n", encoding="utf-8")
+            top_gff3.write_text("##gff-version 3\n", encoding="utf-8")
+
+            found = find_edta_gff3(base, split)
+
+        self.assertEqual(found, top_gff3)
+
+    def test_find_edta_gff3_uses_priority_before_generic_gff3(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            split = base / "Chr1.fa"
+            split.write_text(">x\nA\n", encoding="utf-8")
+            preferred = base / "preferred.EDTA.gff3"
+            fallback = base / "fallback.gff3"
+            preferred.write_text("##gff-version 3\n", encoding="utf-8")
+            fallback.write_text("##gff-version 3\n", encoding="utf-8")
+
+            found = find_edta_gff3(base, split)
+
+        self.assertEqual(found, preferred)
+
+    def test_find_edta_gff3_falls_back_to_split_fasta_parent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            workdir = base / "edta" / "Chr1"
+            split_dir = base / "splits"
+            workdir.mkdir(parents=True)
+            split_dir.mkdir()
+            split = split_dir / "Chr1.fa"
+            split.write_text(">x\nA\n", encoding="utf-8")
+            expected = split_dir / "Chr1.fa.EDTA.TEanno.gff3"
+            expected.write_text("##gff-version 3\n", encoding="utf-8")
+
+            found = find_edta_gff3(workdir, split)
+
+        self.assertEqual(found, expected)
+
     def test_parse_edta_gff3_normalizes_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             gff = Path(tmpdir) / "anno.gff3"
@@ -206,5 +253,7 @@ class AnnotateTeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
 
 

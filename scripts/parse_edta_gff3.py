@@ -1,4 +1,4 @@
-﻿"""Parse EDTA GFF3 outputs into a TIPMap TE annotation TSV."""
+"""Parse EDTA GFF3 outputs into a TIPMap TE annotation TSV."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 from typing import Iterable, Iterator, Sequence
 
-GFF3_PATTERNS = ("*EDTA*.gff3", "*TEanno*.gff3", "*.gff3")
+GFF3_PATTERNS = ("*EDTA.TEanno.gff3", "*TEanno*.gff3", "*EDTA*.gff3", "*.gff3")
 TSV_HEADER = "seq_id\tmd5\tchrom\tstart\tend\tstrand\tsource\ttype\tfamily\tsuperfamily\tattributes\n"
 
 
@@ -41,7 +41,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--edta-dir",
         action="append",
         default=[],
-        help="EDTA output directory to scan recursively for GFF3 files. Repeat for multiple directories.",
+        help="EDTA output directory to scan for GFF3 files. Repeat for multiple directories.",
     )
     parser.add_argument("--output", required=True, help="Output normalized TE annotation TSV path.")
     return parser
@@ -68,14 +68,17 @@ def collect_gff3_paths(gff3_files: Sequence[str | Path], edta_dirs: Sequence[str
             msg = "EDTA directory not found: %s" % dir_path
             raise FileNotFoundError(msg)
         for pattern in GFF3_PATTERNS:
-            for path in sorted(dir_path.rglob(pattern)):
-                if not path.is_file():
-                    continue
-                resolved = path.resolve()
-                if resolved in seen:
-                    continue
-                seen.add(resolved)
-                paths.append(path)
+            candidates = sorted(path for path in dir_path.glob(pattern) if path.is_file())
+            if candidates:
+                break
+        else:
+            candidates = []
+        for path in candidates:
+            resolved = path.resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            paths.append(path)
 
     return sorted(paths, key=lambda path: str(path))
 
@@ -224,3 +227,4 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
