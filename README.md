@@ -1,4 +1,4 @@
-![Static Badge](README.assets/license-MIT-blue.svg) ![ ](README.assets/platform-linux-lightgrey.svg) ![ ](README.assets/release-v0.1.svg)
+﻿![Static Badge](README.assets/license-MIT-blue.svg) ![ ](README.assets/platform-linux-lightgrey.svg) ![ ](README.assets/release-v0.1.svg)
 
 # TIPMap
 
@@ -227,13 +227,14 @@ python scripts/parse_edta_gff3.py \
   --output te_annotations.tsv
 ```
 
-Directory scanning is recursive and deterministic. Files are collected by these
-patterns, de-duplicated, and sorted:
+Directory scanning is top-level only and deterministic. For each `--edta-dir`,
+TIPMap uses the first non-empty pattern group, de-duplicates paths, and sorts
+the final file list:
 
-1. `*EDTA*.gff3`
+1. `*EDTA.TEanno.gff3`
 2. `*TEanno*.gff3`
-3. `*.gff3`
-
+3. `*EDTA*.gff3`
+4. `*.gff3`
 ### 4. Classify TE-SVs and Build the TIP Map
 
 `classify_te_sv.py` is the main TIP-calling entrypoint. It extracts PanPop
