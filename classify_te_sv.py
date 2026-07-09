@@ -44,7 +44,7 @@ CommandRunner = Callable[[Sequence[str], Path | None], subprocess.CompletedProce
 class TEMetadata:
     seq_id: str = ""
     family: str = ""
-    superfamily: str = ""
+    te_class: str = ""
     start: str = ""
     end: str = ""
     strand: str = ""
@@ -58,7 +58,7 @@ class TEHit:
     end: int
     identity: float
     family: str = ""
-    superfamily: str = ""
+    te_class: str = ""
     subject_id: str = ""
     metadata: TEMetadata | None = None
 
@@ -72,7 +72,7 @@ class AlleleEvidence:
     weighted_identity: float | None
     is_te: bool
     family: str = ""
-    superfamily: str = ""
+    te_class: str = ""
     supporting_te_annotations: str = ""
 
 
@@ -93,7 +93,7 @@ class AlleleReportRow:
     is_te: bool
     retained: bool
     family: str
-    superfamily: str
+    te_class: str
     supporting_te_annotations: str
 
 
@@ -101,6 +101,19 @@ class AlleleReportRow:
 class ProcessedVcfRecord:
     line: str | None
     reports: list[AlleleReportRow] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class PanpopAlleleIndexEntry:
+    md5: str
+    record_id: str
+    chrom: str
+    pos: int
+    end: int
+    svtype: str
+    allele_role: str
+    allele_number: int
+    length: int
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -126,7 +139,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--workdir", help="Working directory for allele FASTA, TE FASTA, and BLAST output.")
     parser.add_argument("--panpop-alleles-fasta", help="Optional path for generated PanPop allele FASTA.")
     parser.add_argument("--te-fragments-fasta", help="Optional path for generated TE fragment FASTA.")
+    parser.add_argument("--makeblastdb", default="makeblastdb", help="makeblastdb executable path. Default: makeblastdb.")
+    parser.add_argument("--blast-db-prefix", help="Optional BLAST database prefix. Default: <workdir>/te_fragments_db.")
     parser.add_argument("--blastn", default="blastn", help="blastn executable path. Default: blastn.")
+    parser.add_argument("--blast-threads", type=int, default=1, help="Threads passed to blastn -num_threads. Default: 1.")
+    parser.add_argument("--blast-evalue", type=float, default=1e-5, help="Maximum BLASTN e-value. Default: 1e-5.")
     parser.add_argument(
         "--blast-arg",
         action="append",
@@ -159,6 +176,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def iter_panpop_te_alleles(panpop_vcf: str | Path, *, min_length: int = 1) -> Iterator[FastaRecord]:
     """Yield PanPop alleles for TE classification: INS ALT, DEL REF."""
+
+    for record, _entry in iter_panpop_te_alleles_with_index(panpop_vcf, min_length=min_length):
+        yield record
+
+
+def iter_panpop_te_alleles_with_index(
+    panpop_vcf: str | Path,
+    *,
+    min_length: int = 1,
+) -> Iterator[tuple[FastaRecord, PanpopAlleleIndexEntry]]:
+    """Yield PanPop allele FASTA records with reusable MD5 index entries."""
 
     if min_length < 1:
         msg = "min_length must be >= 1"
@@ -198,7 +226,18 @@ def iter_panpop_te_alleles(panpop_vcf: str | Path, *, min_length: int = 1) -> It
             original_allele,
             len(sequence),
         )
-        yield FastaRecord(name=name, sequence=sequence, description=description)
+        index_entry = PanpopAlleleIndexEntry(
+            md5=md5,
+            record_id=record.source_id or sv_id,
+            chrom=record.chrom,
+            pos=record.pos,
+            end=record.end,
+            svtype=record.svtype,
+            allele_role=role,
+            allele_number=original_allele,
+            length=len(sequence),
+        )
+        yield FastaRecord(name=name, sequence=sequence, description=description), index_entry
 
 
 def write_panpop_te_alleles(
@@ -216,6 +255,52 @@ def write_panpop_te_alleles(
             write_fasta_records([record], handle, line_width=line_width)
             count += 1
     return count
+
+
+def write_panpop_te_alleles_and_index(
+    panpop_vcf: str | Path,
+    output: str | Path,
+    index_output: str | Path,
+    *,
+    min_length: int = 1,
+    line_width: int = 80,
+) -> dict[tuple[str, int, int, str, str, int], PanpopAlleleIndexEntry]:
+    output_path = Path(output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    entries: list[PanpopAlleleIndexEntry] = []
+    lookup: dict[tuple[str, int, int, str, str, int], PanpopAlleleIndexEntry] = {}
+    with output_path.open("wt", encoding="utf-8", newline="\n") as handle:
+        for record, entry in iter_panpop_te_alleles_with_index(panpop_vcf, min_length=min_length):
+            write_fasta_records([record], handle, line_width=line_width)
+            entries.append(entry)
+            lookup[panpop_allele_index_key(entry.chrom, entry.pos, entry.end, entry.svtype, entry.allele_role, entry.allele_number)] = entry
+    write_panpop_allele_index(entries, index_output)
+    return lookup
+
+
+def write_panpop_allele_index(entries: Sequence[PanpopAlleleIndexEntry], output: str | Path) -> None:
+    output_path = Path(output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("wt", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            delimiter="\t",
+            fieldnames=["md5", "record_id", "chrom", "pos", "end", "svtype", "allele_role", "allele_number", "length"],
+        )
+        writer.writeheader()
+        for entry in entries:
+            writer.writerow(entry.__dict__)
+
+
+def panpop_allele_index_key(
+    chrom: str,
+    pos: int,
+    end: int,
+    svtype: str,
+    allele_role: str,
+    allele_number: int,
+) -> tuple[str, int, int, str, str, int]:
+    return (chrom, pos, end, svtype, allele_role, allele_number)
 
 
 def iter_te_fragments(
@@ -254,9 +339,9 @@ def iter_te_fragments(
                 continue
             fragment_md5 = sequence_md5(fragment)
             name = "%s::te:%d-%d:%s" % (seq_id, left, right, fragment_md5)
-            description = "family=%s superfamily=%s strand=%s length=%d" % (
+            description = "family=%s class=%s strand=%s length=%d" % (
                 row.get("family", "") or ".",
-                row.get("superfamily", "") or ".",
+                row.get("class", "") or ".",
                 row.get("strand", ".") or ".",
                 len(fragment),
             )
@@ -281,27 +366,56 @@ def write_te_fragments(
     return count
 
 
+def run_makeblastdb(
+    *,
+    fasta: str | Path,
+    db_prefix: str | Path,
+    makeblastdb: str = "makeblastdb",
+    runner: CommandRunner | None = None,
+) -> Path:
+    db_path = Path(db_prefix)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    command = [makeblastdb, "-in", str(fasta), "-dbtype", "nucl", "-out", str(db_path)]
+    result = (runner or _default_runner)(command, None)
+    if result.returncode != 0:
+        msg = "makeblastdb failed with exit code %d" % result.returncode
+        raise RuntimeError(msg)
+    return db_path
+
+
 def run_blastn(
     *,
     query_fasta: str | Path,
-    subject_fasta: str | Path,
+    blast_db: str | Path,
     output: str | Path,
     blastn: str = "blastn",
+    blast_threads: int = 1,
+    blast_evalue: float = 1e-5,
     extra_args: Sequence[str] = (),
     runner: CommandRunner | None = None,
 ) -> Path:
+    if blast_threads < 1:
+        msg = "blast_threads must be >= 1"
+        raise ValueError(msg)
+    if blast_evalue <= 0:
+        msg = "blast_evalue must be > 0"
+        raise ValueError(msg)
     output_path = Path(output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     command = [
         blastn,
         "-query",
         str(query_fasta),
-        "-subject",
-        str(subject_fasta),
+        "-db",
+        str(blast_db),
         "-out",
         str(output_path),
         "-outfmt",
         BLAST_OUTFMT,
+        "-evalue",
+        str(blast_evalue),
+        "-num_threads",
+        str(blast_threads),
     ]
     for extra in extra_args:
         command.extend(shlex.split(extra))
@@ -328,7 +442,7 @@ def read_te_metadata(path: str | Path | None) -> dict[str, TEMetadata]:
             item = TEMetadata(
                 seq_id=seq_id,
                 family=row.get("family", ""),
-                superfamily=row.get("superfamily", ""),
+                te_class=row.get("class", ""),
                 start=row.get("start", ""),
                 end=row.get("end", ""),
                 strand=row.get("strand", ""),
@@ -394,7 +508,7 @@ def read_blast_hits(path: str | Path, te_metadata: dict[str, TEMetadata] | None 
                     identity=pident,
                     subject_id=sseqid,
                     family="" if te_metadata_item is None else te_metadata_item.family,
-                    superfamily="" if te_metadata_item is None else te_metadata_item.superfamily,
+                    te_class="" if te_metadata_item is None else te_metadata_item.te_class,
                     metadata=te_metadata_item,
                 )
             )
@@ -435,12 +549,14 @@ def classify_allele(
     sequence: str,
     hits: Sequence[TEHit],
     *,
+    md5: str | None = None,
+    allele_length: int | None = None,
     min_te_coverage: float = 0.60,
     min_identity: float = 80.0,
     min_te_covered_bp: int = 40,
 ) -> AlleleEvidence:
-    allele_length = len(sequence)
-    md5 = sequence_md5(sequence)
+    allele_length = len(sequence) if allele_length is None else allele_length
+    md5 = sequence_md5(sequence) if md5 is None else md5
     if allele_length == 0 or not hits:
         return AlleleEvidence(md5, allele_length, 0, 0.0, None, False)
 
@@ -459,7 +575,7 @@ def classify_allele(
         clipped_intervals.append((start, end))
         weighted_identity_sum += length * hit.identity
         aligned_bp_sum += length
-        key = (hit.family, hit.superfamily)
+        key = (hit.family, hit.te_class)
         family_bp[key] = family_bp.get(key, 0) + length
         supporting_annotation = format_supporting_te_annotation(hit, start, end)
         if supporting_annotation and supporting_annotation not in seen_supporting_annotations:
@@ -475,9 +591,9 @@ def classify_allele(
         and weighted_identity >= min_identity
         and te_covered_bp >= min_te_covered_bp
     )
-    family, superfamily = ("", "")
+    family, te_class = ("", "")
     if family_bp:
-        family, superfamily = max(family_bp.items(), key=lambda item: item[1])[0]
+        family, te_class = max(family_bp.items(), key=lambda item: item[1])[0]
     return AlleleEvidence(
         md5=md5,
         allele_length=allele_length,
@@ -486,7 +602,7 @@ def classify_allele(
         weighted_identity=weighted_identity,
         is_te=is_te,
         family=family,
-        superfamily=superfamily,
+        te_class=te_class,
         supporting_te_annotations=";".join(supporting_te_annotations),
     )
 
@@ -511,15 +627,15 @@ def format_supporting_te_annotation(hit: TEHit, query_start: int, query_end: int
             fields.append("type=%s" % sanitize_report_value(metadata.feature_type))
         if metadata.family:
             fields.append("family=%s" % sanitize_report_value(metadata.family))
-        if metadata.superfamily:
-            fields.append("superfamily=%s" % sanitize_report_value(metadata.superfamily))
+        if metadata.te_class:
+            fields.append("class=%s" % sanitize_report_value(metadata.te_class))
         if metadata.attributes:
             fields.append("attributes=%s" % sanitize_report_value(metadata.attributes))
     else:
         if hit.family:
             fields.append("family=%s" % sanitize_report_value(hit.family))
-        if hit.superfamily:
-            fields.append("superfamily=%s" % sanitize_report_value(hit.superfamily))
+        if hit.te_class:
+            fields.append("class=%s" % sanitize_report_value(hit.te_class))
     return ",".join(fields)
 
 
@@ -547,6 +663,7 @@ def iter_tip_vcf_lines(
     panpop_vcf: str | Path,
     hits_by_md5: dict[str, list[TEHit]],
     *,
+    allele_index: dict[tuple[str, int, int, str, str, int], PanpopAlleleIndexEntry] | None = None,
     min_te_coverage: float = 0.60,
     min_identity: float = 80.0,
     min_te_covered_bp: int = 40,
@@ -574,6 +691,7 @@ def iter_tip_vcf_lines(
             yield process_vcf_record_line(
                 line,
                 hits_by_md5,
+                allele_index=allele_index,
                 min_te_coverage=min_te_coverage,
                 min_identity=min_identity,
                 min_te_covered_bp=min_te_covered_bp,
@@ -584,6 +702,7 @@ def process_vcf_record_line(
     line: str,
     hits_by_md5: dict[str, list[TEHit]],
     *,
+    allele_index: dict[tuple[str, int, int, str, str, int], PanpopAlleleIndexEntry] | None = None,
     min_te_coverage: float = 0.60,
     min_identity: float = 80.0,
     min_te_covered_bp: int = 40,
@@ -605,9 +724,13 @@ def process_vcf_record_line(
     for record in records:
         old_alt_number = record.allele_index + 1
         if record.svtype == "INS":
+            index_entry = lookup_panpop_allele_index_entry(allele_index, record.chrom, record.pos, record.end, record.svtype, "alt", old_alt_number)
+            md5 = sequence_md5(record.alt) if index_entry is None else index_entry.md5
             evidence = classify_allele(
                 record.alt,
-                hits_by_md5.get(sequence_md5(record.alt), []),
+                hits_by_md5.get(md5, []),
+                md5=md5,
+                allele_length=None if index_entry is None else index_entry.length,
                 min_te_coverage=min_te_coverage,
                 min_identity=min_identity,
                 min_te_covered_bp=min_te_covered_bp,
@@ -618,9 +741,13 @@ def process_vcf_record_line(
                 retained_alt_numbers.append(old_alt_number)
         elif record.svtype == "DEL":
             if ref_evidence is None:
+                index_entry = lookup_panpop_allele_index_entry(allele_index, record.chrom, record.pos, record.end, record.svtype, "ref", 0)
+                md5 = sequence_md5(ref) if index_entry is None else index_entry.md5
                 ref_evidence = classify_allele(
                     ref,
-                    hits_by_md5.get(sequence_md5(ref), []),
+                    hits_by_md5.get(md5, []),
+                    md5=md5,
+                    allele_length=None if index_entry is None else index_entry.length,
                     min_te_coverage=min_te_coverage,
                     min_identity=min_identity,
                     min_te_covered_bp=min_te_covered_bp,
@@ -675,6 +802,20 @@ def process_vcf_record_line(
     return ProcessedVcfRecord(line="\t".join(fields), reports=reports)
 
 
+def lookup_panpop_allele_index_entry(
+    allele_index: dict[tuple[str, int, int, str, str, int], PanpopAlleleIndexEntry] | None,
+    chrom: str,
+    pos: int,
+    end: int,
+    svtype: str,
+    allele_role: str,
+    allele_number: int,
+) -> PanpopAlleleIndexEntry | None:
+    if allele_index is None:
+        return None
+    return allele_index.get(panpop_allele_index_key(chrom, pos, end, svtype, allele_role, allele_number))
+
+
 def build_report_row(
     *,
     record_id: str,
@@ -703,7 +844,7 @@ def build_report_row(
         is_te=evidence.is_te,
         retained=retained,
         family=evidence.family,
-        superfamily=evidence.superfamily,
+        te_class=evidence.te_class,
         supporting_te_annotations=evidence.supporting_te_annotations,
     )
 
@@ -757,6 +898,7 @@ def write_tip_outputs(
     output_vcf: str | Path,
     te_annotations: str | Path | None = None,
     allele_report: str | Path | None = None,
+    allele_index: dict[tuple[str, int, int, str, str, int], PanpopAlleleIndexEntry] | None = None,
     min_te_coverage: float = 0.60,
     min_identity: float = 80.0,
     min_te_covered_bp: int = 40,
@@ -771,6 +913,7 @@ def write_tip_outputs(
         for processed in iter_tip_vcf_lines(
             panpop_vcf,
             hits_by_md5,
+            allele_index=allele_index,
             min_te_coverage=min_te_coverage,
             min_identity=min_identity,
             min_te_covered_bp=min_te_covered_bp,
@@ -797,7 +940,11 @@ def run_classification_workflow(
     workdir: str | Path | None = None,
     panpop_alleles_fasta: str | Path | None = None,
     te_fragments_fasta: str | Path | None = None,
+    makeblastdb: str = "makeblastdb",
+    blast_db_prefix: str | Path | None = None,
     blastn: str = "blastn",
+    blast_threads: int = 1,
+    blast_evalue: float = 1e-5,
     blast_args: Sequence[str] = (),
     min_panpop_allele_length: int = 1,
     min_te_fragment_length: int = 1,
@@ -811,16 +958,20 @@ def run_classification_workflow(
     work_path = Path(workdir) if workdir is not None else output_path.with_suffix(".tipmap_work")
     work_path.mkdir(parents=True, exist_ok=True)
     blast_path = Path(blast_tsv) if blast_tsv is not None else work_path / "panpop_allele_vs_te.tsv"
+    allele_index: dict[tuple[str, int, int, str, str, int], PanpopAlleleIndexEntry] | None = None
 
     if blast_tsv is None:
         if sv_fasta is None or te_annotations is None:
             msg = "--sv-fasta and --te-annotations are required when --blast-tsv is not provided"
             raise ValueError(msg)
         allele_path = Path(panpop_alleles_fasta) if panpop_alleles_fasta is not None else work_path / "panpop_alleles.fa"
+        allele_index_path = work_path / "panpop_alleles.index.tsv"
         fragment_path = Path(te_fragments_fasta) if te_fragments_fasta is not None else work_path / "te_fragments.fa"
-        write_panpop_te_alleles(
+        db_prefix = Path(blast_db_prefix) if blast_db_prefix is not None else work_path / "te_fragments_db"
+        allele_index = write_panpop_te_alleles_and_index(
             panpop_vcf,
             allele_path,
+            allele_index_path,
             min_length=min_panpop_allele_length,
             line_width=fasta_line_width,
         )
@@ -831,11 +982,19 @@ def run_classification_workflow(
             min_length=min_te_fragment_length,
             line_width=fasta_line_width,
         )
+        run_makeblastdb(
+            fasta=fragment_path,
+            db_prefix=db_prefix,
+            makeblastdb=makeblastdb,
+            runner=runner,
+        )
         run_blastn(
             query_fasta=allele_path,
-            subject_fasta=fragment_path,
+            blast_db=db_prefix,
             output=blast_path,
             blastn=blastn,
+            blast_threads=blast_threads,
+            blast_evalue=blast_evalue,
             extra_args=blast_args,
             runner=runner,
         )
@@ -846,6 +1005,7 @@ def run_classification_workflow(
         te_annotations=te_annotations,
         output_vcf=output_vcf,
         allele_report=allele_report,
+        allele_index=allele_index,
         min_te_coverage=min_te_coverage,
         min_identity=min_identity,
         min_te_covered_bp=min_te_covered_bp,
@@ -855,12 +1015,14 @@ def run_classification_workflow(
 def write_allele_report(rows: Sequence[AlleleReportRow], output: str | Path) -> None:
     output_path = Path(output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = list(AlleleReportRow.__dataclass_fields__)
+    fieldnames = ["class" if field == "te_class" else field for field in AlleleReportRow.__dataclass_fields__]
     with output_path.open("wt", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, delimiter="\t", fieldnames=fieldnames)
         writer.writeheader()
         for row in rows:
-            writer.writerow(row.__dict__)
+            raw_row = row.__dict__.copy()
+            raw_row["class"] = raw_row.pop("te_class")
+            writer.writerow(raw_row)
 
 
 def _looks_like_blast_header(fields: Sequence[str]) -> bool:
@@ -914,7 +1076,11 @@ def main() -> int:
             workdir=args.workdir,
             panpop_alleles_fasta=args.panpop_alleles_fasta,
             te_fragments_fasta=args.te_fragments_fasta,
+            makeblastdb=args.makeblastdb,
+            blast_db_prefix=args.blast_db_prefix,
             blastn=args.blastn,
+            blast_threads=args.blast_threads,
+            blast_evalue=args.blast_evalue,
             blast_args=args.blast_arg,
             min_panpop_allele_length=args.min_panpop_allele_length,
             min_te_fragment_length=args.min_te_fragment_length,
@@ -930,6 +1096,8 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
 
 
 

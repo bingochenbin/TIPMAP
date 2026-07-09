@@ -203,7 +203,7 @@ class AnnotateTeTests(unittest.TestCase):
         self.assertEqual(rows[0].md5, "md5a")
         self.assertEqual(rows[0].chrom, "Chr1A")
         self.assertEqual(rows[0].family, "Gypsy")
-        self.assertEqual(rows[0].superfamily, "LTR")
+        self.assertEqual(rows[0].te_class, "LTR")
 
     def test_run_annotation_workflow_with_fake_runner(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -253,6 +253,7 @@ class AnnotateTeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
 

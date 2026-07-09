@@ -61,7 +61,7 @@ class ClassifyTeSvTests(unittest.TestCase):
 
             hits = read_blast_hits(
                 blast,
-                {"te1": TEMetadata(seq_id="te1", family="Gypsy", superfamily="LTR", start="1", end="60", strand="+", feature_type="repeat_region", attributes="ID=x")},
+                {"te1": TEMetadata(seq_id="te1", family="Gypsy", te_class="LTR", start="1", end="60", strand="+", feature_type="repeat_region", attributes="ID=x")},
             )
 
         self.assertEqual(len(hits[allele_md5]), 1)
@@ -87,7 +87,7 @@ class ClassifyTeSvTests(unittest.TestCase):
                     "source|alt|panpop|Chr1|1|1|INS|abc": TEMetadata(
                         seq_id="source|alt|panpop|Chr1|1|1|INS|abc",
                         family="TIR",
-                        superfamily="DNA",
+                        te_class="DNA",
                         start="1",
                         end="50",
                         strand="+",
@@ -98,7 +98,7 @@ class ClassifyTeSvTests(unittest.TestCase):
             )
 
         self.assertEqual(hits[allele_md5][0].family, "TIR")
-        self.assertEqual(hits[allele_md5][0].superfamily, "DNA")
+        self.assertEqual(hits[allele_md5][0].te_class, "DNA")
         self.assertEqual(hits[allele_md5][0].metadata.attributes if hits[allele_md5][0].metadata else "", "ID=y")
 
     def test_read_blast_hits_prefers_exact_te_fragment_metadata(self) -> None:
@@ -109,7 +109,7 @@ class ClassifyTeSvTests(unittest.TestCase):
             seq_id = "source|alt|panpop|Chr1|1|1|INS|abc"
             allele_md5 = sequence_md5("A" * 120)
             te.write_text(
-                "seq_id\tmd5\tchrom\tstart\tend\tstrand\tsource\ttype\tfamily\tsuperfamily\tattributes\n"
+                "seq_id\tmd5\tchrom\tstart\tend\tstrand\tsource\ttype\tfamily\tclass\tattributes\n"
                 "%s\tabc\tChr1\t1\t40\t+\tEDTA\trepeat_region\tGypsy\tLTR\tID=first\n"
                 "%s\tabc\tChr1\t60\t100\t+\tEDTA\trepeat_region\tTIR\tDNA\tID=second\n" % (seq_id, seq_id),
                 encoding="utf-8",
@@ -168,20 +168,24 @@ class ClassifyTeSvTests(unittest.TestCase):
             )
             sv_fasta.write_text(">%s\n%s\n" % (te_seq_id, alt), encoding="utf-8")
             te_tsv.write_text(
-                "seq_id\tmd5\tchrom\tstart\tend\tstrand\tsource\ttype\tfamily\tsuperfamily\tattributes\n"
+                "seq_id\tmd5\tchrom\tstart\tend\tstrand\tsource\ttype\tfamily\tclass\tattributes\n"
                 "%s\tmd5te\tChr1\t1\t70\t+\tEDTA\trepeat_region\tGypsy\tLTR\tID=x\n" % te_seq_id,
                 encoding="utf-8",
             )
 
+            commands: list[list[str]] = []
+
             def runner(command: Sequence[str], cwd: Path | None) -> subprocess.CompletedProcess[str]:
-                query = Path(command[command.index("-query") + 1])
-                out = Path(command[command.index("-out") + 1])
-                query_record = next(iter_fasta(query))
-                subject = "%s::te:1-70:fragmentmd5" % te_seq_id
-                out.write_text(
-                    "%s\t%s\t90\t70\t0\t0\t1\t70\t1\t70\t1e-20\t200\n" % (query_record.name, subject),
-                    encoding="utf-8",
-                )
+                commands.append(list(command))
+                if command[0] == "blastn":
+                    query = Path(command[command.index("-query") + 1])
+                    out = Path(command[command.index("-out") + 1])
+                    query_record = next(iter_fasta(query))
+                    subject = "%s::te:1-70:fragmentmd5" % te_seq_id
+                    out.write_text(
+                        "%s\t%s\t90\t70\t0\t0\t1\t70\t1\t70\t1e-20\t200\n" % (query_record.name, subject),
+                        encoding="utf-8",
+                    )
                 return subprocess.CompletedProcess(command, 0, "", "")
 
             record_count, report_count = run_classification_workflow(
@@ -197,8 +201,16 @@ class ClassifyTeSvTests(unittest.TestCase):
             allele_fasta_exists = (workdir / "panpop_alleles.fa").is_file()
             te_fasta_exists = (workdir / "te_fragments.fa").is_file()
             blast_tsv_exists = (workdir / "panpop_allele_vs_te.tsv").is_file()
+            index_text = (workdir / "panpop_alleles.index.tsv").read_text(encoding="utf-8")
             report_text = report.read_text(encoding="utf-8")
 
+        self.assertEqual(commands[0][0], "makeblastdb")
+        self.assertEqual(commands[0][commands[0].index("-out") + 1], str(workdir / "te_fragments_db"))
+        self.assertEqual(commands[1][0], "blastn")
+        self.assertEqual(commands[1][commands[1].index("-db") + 1], str(workdir / "te_fragments_db"))
+        self.assertEqual(commands[1][commands[1].index("-evalue") + 1], "1e-05")
+        self.assertEqual(commands[1][commands[1].index("-num_threads") + 1], "1")
+        self.assertIn(sequence_md5(alt), index_text)
         self.assertEqual(record_count, 1)
         self.assertEqual(report_count, 1)
         self.assertTrue(allele_fasta_exists)
@@ -210,6 +222,64 @@ class ClassifyTeSvTests(unittest.TestCase):
         self.assertIn("seq_id=%s" % te_seq_id, report_text)
         self.assertIn("family=Gypsy", report_text)
         self.assertIn("attributes=ID=x", report_text)
+
+    def test_integrated_workflow_passes_custom_blast_database_options(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            panpop = base / "panpop.vcf"
+            sv_fasta = base / "sv.fa"
+            te_tsv = base / "te.tsv"
+            out_vcf = base / "tip.vcf"
+            workdir = base / "work"
+            db_prefix = base / "custom" / "te_db"
+            alt = "A" * 100
+            te_seq_id = "te_source|alt|GenomeA|Chr1|1|1|INS|md5te"
+            panpop.write_text(
+                "##fileformat=VCFv4.2\n"
+                "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tA\n"
+                "Chr1\t10\tins1\tA\t%s\t.\tPASS\t.\tGT\t1/1\n" % alt,
+                encoding="utf-8",
+            )
+            sv_fasta.write_text(">%s\n%s\n" % (te_seq_id, alt), encoding="utf-8")
+            te_tsv.write_text(
+                "seq_id\tmd5\tchrom\tstart\tend\tstrand\tsource\ttype\tfamily\tclass\tattributes\n"
+                "%s\tmd5te\tChr1\t1\t70\t+\tEDTA\trepeat_region\tGypsy\tLTR\tID=x\n" % te_seq_id,
+                encoding="utf-8",
+            )
+            commands: list[list[str]] = []
+
+            def runner(command: Sequence[str], cwd: Path | None) -> subprocess.CompletedProcess[str]:
+                commands.append(list(command))
+                if command[0] == "blastn":
+                    query = Path(command[command.index("-query") + 1])
+                    out = Path(command[command.index("-out") + 1])
+                    query_record = next(iter_fasta(query))
+                    subject = "%s::te:1-70:fragmentmd5" % te_seq_id
+                    out.write_text(
+                        "%s\t%s\t90\t70\t0\t0\t1\t70\t1\t70\t1e-20\t200\n" % (query_record.name, subject),
+                        encoding="utf-8",
+                    )
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            run_classification_workflow(
+                panpop_vcf=panpop,
+                sv_fasta=sv_fasta,
+                te_annotations=te_tsv,
+                output_vcf=out_vcf,
+                workdir=workdir,
+                blast_db_prefix=db_prefix,
+                blast_threads=8,
+                blast_evalue=1e-10,
+                blast_args=["-task megablast"],
+                runner=runner,
+            )
+
+        self.assertEqual(commands[0][commands[0].index("-out") + 1], str(db_prefix))
+        self.assertEqual(commands[1][commands[1].index("-db") + 1], str(db_prefix))
+        self.assertEqual(commands[1][commands[1].index("-evalue") + 1], "1e-10")
+        self.assertEqual(commands[1][commands[1].index("-num_threads") + 1], "8")
+        self.assertIn("-task", commands[1])
+        self.assertIn("megablast", commands[1])
 
     def test_write_tip_outputs_keeps_del_when_ref_is_te(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -232,7 +302,7 @@ class ClassifyTeSvTests(unittest.TestCase):
                 encoding="utf-8",
             )
             te.write_text(
-                "seq_id\tmd5\tchrom\tstart\tend\tstrand\tsource\ttype\tfamily\tsuperfamily\tattributes\n"
+                "seq_id\tmd5\tchrom\tstart\tend\tstrand\tsource\ttype\tfamily\tclass\tattributes\n"
                 "te1\t\tChr1\t1\t70\t+\tEDTA\trepeat_region\tTIR\tDNA\tID=x\n",
                 encoding="utf-8",
             )
@@ -252,9 +322,44 @@ class ClassifyTeSvTests(unittest.TestCase):
         self.assertEqual(data[0].split("\t")[9:], ["0/0", "1/1"])
         self.assertIn("TIP_TE_REF=1", data[0])
 
+    def test_blast_tsv_mode_skips_internal_blast_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            alt = "A" * 100
+            vcf = base / "panpop.vcf"
+            blast = base / "blast.tsv"
+            out_vcf = base / "tip.vcf"
+            vcf.write_text(
+                "##fileformat=VCFv4.2\n"
+                "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tA\n"
+                "Chr1\t10\tins1\tA\t%s\t.\tPASS\t.\tGT\t1/1\n" % alt,
+                encoding="utf-8",
+            )
+            blast.write_text(
+                "%s\tte1\t90\t70\t0\t0\t1\t70\t1\t70\t1e-20\t200\n" % sequence_md5(alt),
+                encoding="utf-8",
+            )
+            calls: list[list[str]] = []
+
+            def runner(command: Sequence[str], cwd: Path | None) -> subprocess.CompletedProcess[str]:
+                calls.append(list(command))
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            record_count, _report_count = run_classification_workflow(
+                panpop_vcf=vcf,
+                blast_tsv=blast,
+                output_vcf=out_vcf,
+                runner=runner,
+            )
+
+        self.assertEqual(calls, [])
+        self.assertEqual(record_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main()
+
+
 
 
 

@@ -55,9 +55,9 @@ def iter_te_fragments(
                 continue
             fragment_md5 = sequence_md5(fragment)
             name = "%s::te:%d-%d:%s" % (seq_id, left, right, fragment_md5)
-            description = "family=%s superfamily=%s strand=%s length=%d" % (
+            description = "family=%s class=%s strand=%s length=%d" % (
                 row.get("family", "") or ".",
-                row.get("superfamily", "") or ".",
+                row.get("class", "") or ".",
                 row.get("strand", ".") or ".",
                 len(fragment),
             )
@@ -102,3 +102,6 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+

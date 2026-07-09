@@ -29,7 +29,7 @@ class ExtractTeFragmentsScriptTests(unittest.TestCase):
                 encoding="utf-8",
             )
             annotations.write_text(
-                "seq_id\tmd5\tchrom\tstart\tend\tstrand\tsource\ttype\tfamily\tsuperfamily\tattributes\n"
+                "seq_id\tmd5\tchrom\tstart\tend\tstrand\tsource\ttype\tfamily\tclass\tattributes\n"
                 "sv1|alt|panpop|Chr1|1|1|INS|md5a\tmd5a\tChr1\t3\t8\t+\tEDTA\trepeat_region\tGypsy\tLTR\tID=x\n",
                 encoding="utf-8",
             )
@@ -50,7 +50,7 @@ class ExtractTeFragmentsScriptTests(unittest.TestCase):
             output = base / "te.fa"
             fasta.write_text(">seq1\nAACCGG\n", encoding="utf-8")
             annotations.write_text(
-                "seq_id\tmd5\tchrom\tstart\tend\tstrand\tsource\ttype\tfamily\tsuperfamily\tattributes\n"
+                "seq_id\tmd5\tchrom\tstart\tend\tstrand\tsource\ttype\tfamily\tclass\tattributes\n"
                 "seq1\t\tChr1\t2\t5\t-\tEDTA\trepeat_region\tTIR\tDNA\tID=x\n",
                 encoding="utf-8",
             )
@@ -63,3 +63,5 @@ class ExtractTeFragmentsScriptTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+

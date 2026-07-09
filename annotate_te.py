@@ -51,7 +51,7 @@ class TEAnnotationRow:
     source: str
     feature_type: str
     family: str
-    superfamily: str
+    te_class: str
     attributes: str
 
 
@@ -302,7 +302,7 @@ def parse_edta_gff3(path: str | Path) -> Iterator[TEAnnotationRow]:
                 continue
             seq_id, source, feature_type, start, end, _score, strand, _phase, raw_attributes = fields
             attributes = parse_gff3_attributes(raw_attributes)
-            family, superfamily = classify_te_attributes(attributes, feature_type)
+            family, te_class = classify_te_attributes(attributes, feature_type)
             yield TEAnnotationRow(
                 seq_id=seq_id,
                 md5=md5_from_tipmap_header(seq_id),
@@ -313,7 +313,7 @@ def parse_edta_gff3(path: str | Path) -> Iterator[TEAnnotationRow]:
                 source=source,
                 feature_type=feature_type,
                 family=family,
-                superfamily=superfamily,
+                te_class=te_class,
                 attributes=raw_attributes,
             )
 
@@ -332,7 +332,7 @@ def parse_gff3_attributes(raw_attributes: str) -> dict[str, str]:
 
 
 def classify_te_attributes(attributes: dict[str, str], fallback: str) -> tuple[str, str]:
-    """Extract family and superfamily from common EDTA GFF3 attribute keys."""
+    """Extract TE family and class from common EDTA GFF3 attribute keys."""
 
     classification = (
         attributes.get("Classification")
@@ -365,7 +365,7 @@ def write_annotation_tsv(rows: Iterable[TEAnnotationRow], output: str | Path) ->
     output_path.parent.mkdir(parents=True, exist_ok=True)
     count = 0
     with output_path.open("wt", encoding="utf-8", newline="\n") as handle:
-        handle.write("seq_id\tmd5\tchrom\tstart\tend\tstrand\tsource\ttype\tfamily\tsuperfamily\tattributes\n")
+        handle.write("seq_id\tmd5\tchrom\tstart\tend\tstrand\tsource\ttype\tfamily\tclass\tattributes\n")
         for row in rows:
             handle.write(
                 "%s\t%s\t%s\t%d\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n"
@@ -379,7 +379,7 @@ def write_annotation_tsv(rows: Iterable[TEAnnotationRow], output: str | Path) ->
                     row.source,
                     row.feature_type,
                     row.family,
-                    row.superfamily,
+                    row.te_class,
                     row.attributes,
                 )
             )
@@ -503,6 +503,8 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
 
 
 

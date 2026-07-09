@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import contextlib
 import importlib.util
@@ -36,7 +36,7 @@ class ParseEdtaGff3ScriptTests(unittest.TestCase):
         self.assertEqual(count, 1)
         self.assertEqual(
             lines[0],
-            "seq_id\tmd5\tchrom\tstart\tend\tstrand\tsource\ttype\tfamily\tsuperfamily\tattributes",
+            "seq_id\tmd5\tchrom\tstart\tend\tstrand\tsource\ttype\tfamily\tclass\tattributes",
         )
         self.assertIn("sv1|alt|GenomeA|Chr1A|1|1|INS|md5a\tmd5a\tChr1A\t2\t20", lines[1])
         self.assertIn("Gypsy\tLTR", lines[1])
@@ -129,6 +129,8 @@ class ParseEdtaGff3ScriptTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
 
 
 

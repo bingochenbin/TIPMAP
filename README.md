@@ -205,7 +205,7 @@ adds `--edta-arg "--anno 1"`, the duplicate setting is ignored. If the user adds
 The TE annotation TSV contains:
 
 ```text
-seq_id  md5  chrom  start  end  strand  source  type  family  superfamily  attributes
+seq_id  md5  chrom  start  end  strand  source  type  family  class  attributes
 ```
 
 ### 3. Parse Existing EDTA GFF3 Outputs
@@ -249,6 +249,8 @@ python classify_te_sv.py \
   --output-vcf panpop.tip.vcf \
   --allele-report panpop.tip_alleles.tsv \
   --workdir tipmap_classify_work \
+  --blast-threads 16 \
+  --blast-evalue 1e-5 \
   --min-te-coverage 0.60 \
   --min-identity 80 \
   --min-te-covered-bp 40
@@ -259,14 +261,21 @@ Internally, PanPop alleles are extracted for classification as:
 - `INS`: each PanPop ALT allele.
 - `DEL`: the PanPop REF allele once per record.
 
-The generated BLASTN command uses outfmt 6:
+The internal BLAST workflow builds a nucleotide database from extracted TE
+fragments, then runs BLASTN against that database with outfmt 6:
 
 ```bash
+makeblastdb -in te_fragments.fa -dbtype nucl -out te_fragments_db
 blastn -query panpop_alleles.fa \
-  -subject te_fragments.fa \
+  -db te_fragments_db \
+  -evalue 1e-5 \
+  -num_threads 16 \
   -out panpop_allele_vs_te.tsv \
   -outfmt "6 qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore"
 ```
+
+`classify_te_sv.py` also writes `panpop_alleles.index.tsv` in the workdir so
+PanPop allele MD5 values can be reused while rewriting the TIP-map VCF.
 
 If BLASTN was already run separately, reuse it with `--blast-tsv`:
 
@@ -348,7 +357,7 @@ genome, chromosome, position, SV type, and MD5.
 schema:
 
 ```text
-seq_id  md5  chrom  start  end  strand  source  type  family  superfamily  attributes
+seq_id  md5  chrom  start  end  strand  source  type  family  class  attributes
 ```
 
 ### TIP-map VCF
@@ -369,9 +378,9 @@ The optional allele report stores one row per evaluated allele, including:
 - PanPop record ID, chromosome, position, SV type, and allele role.
 - original and rewritten allele number.
 - allele length, MD5, TE-covered bases, union coverage, and weighted identity.
-- retained status and TE family/superfamily.
+- retained status and TE family/class.
 - `supporting_te_annotations`, which preserves BLAST subject, query interval,
-  identity, TE coordinates, strand, type, family, superfamily, and raw GFF3
+  identity, TE coordinates, strand, type, family, class, and raw GFF3
   attributes from the TE annotation TSV.
 
 ## Development
@@ -391,7 +400,7 @@ TE annotation command construction, and BLAST-based TIP classification.
 - TIPMap currently focuses on `INS` and `DEL`; other SV types are ignored or
   normalized to `unknown` during parsing.
 - Pairwise `ASM_*` fields are query-genome coordinates. They can guide query
-  ALT flank extraction but are not used for reference-coordinate matching.
+  ALT flank extraction.
 - Representative ALT selection is intentionally left to downstream policy; the
   extraction stage preserves all matched ALT evidence.
 - Classification operates on PanPop allele sequences (`INS` ALT and `DEL` REF)
@@ -399,7 +408,8 @@ TE annotation command construction, and BLAST-based TIP classification.
 
 ##  How to access help
 
-Please don't hesitate to leave a message at github [`Issues`](https://github.com/bingochenbin/MRkit/issues) if you encounter any bugs or issues.  We will try our best to deal with all issues as soon as possible. In addition, if any suggestions are available, feel free to contact: **_Bin Chen_** [a1030539294@gmail.com](mailto:a1030539294@gmail.com).
+Please don't hesitate to leave a message at github [`Issues`](https://github.com/bingochenbin/TIPMAP/issues) if you encounter any bugs or issues.  We will try our best to deal with all issues as soon as possible. In addition, if any suggestions are available, feel free to contact: **_Bin Chen_** [a1030539294@gmail.com](mailto:a1030539294@gmail.com).
 
 ##  Citation
+
 
