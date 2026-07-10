@@ -11,7 +11,7 @@ import shlex
 import subprocess
 from typing import Callable, Iterable, Iterator, Sequence, TextIO
 
-from tipmap.lib.fasta import FastaRecord, read_fasta, reverse_complement, write_fasta_records
+from tipmap.lib.fasta import FastaRecord, iter_fasta, read_fasta, reverse_complement, write_fasta_records
 from tipmap.lib.matcher import panpop_sv_key
 from tipmap.lib.parser import parse_panpop_vcf, parse_vcf_record_line
 from tipmap.lib.utils import sequence_md5
@@ -114,6 +114,17 @@ class PanpopAlleleIndexEntry:
     allele_role: str
     allele_number: int
     length: int
+
+
+@dataclass
+class DedupTEFragmentEntry:
+    md5: str
+    representative_seq_id: str
+    family: str
+    te_class: str
+    all_families: set[str] = field(default_factory=set)
+    all_classes: set[str] = field(default_factory=set)
+    source_count: int = 0
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -364,6 +375,93 @@ def write_te_fragments(
             write_fasta_records([record], handle, line_width=line_width)
             count += 1
     return count
+
+
+def write_deduplicated_te_fragments(
+    input_fasta: str | Path,
+    output_fasta: str | Path,
+    metadata_output: str | Path,
+    *,
+    line_width: int = 80,
+) -> int:
+    """Write sequence-level de-duplicated TE fragments and classification metadata."""
+
+    output_path = Path(output_fasta)
+    metadata_path = Path(metadata_output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+    records_by_md5: dict[str, FastaRecord] = {}
+    metadata_by_md5: dict[str, DedupTEFragmentEntry] = {}
+    for record in iter_fasta(input_fasta):
+        md5 = sequence_md5(record.sequence)
+        family, te_class = parse_te_fragment_description(record.description or "")
+        if md5 not in records_by_md5:
+            records_by_md5[md5] = record
+            metadata_by_md5[md5] = DedupTEFragmentEntry(
+                md5=md5,
+                representative_seq_id=record.name,
+                family=family,
+                te_class=te_class,
+                all_families=set(),
+                all_classes=set(),
+                source_count=0,
+            )
+        entry = metadata_by_md5[md5]
+        if family:
+            entry.all_families.add(family)
+        if te_class:
+            entry.all_classes.add(te_class)
+        entry.source_count += 1
+    with output_path.open("wt", encoding="utf-8", newline="\n") as handle:
+        for md5 in sorted(records_by_md5):
+            write_fasta_records([records_by_md5[md5]], handle, line_width=line_width)
+    write_deduplicated_te_fragment_metadata(metadata_by_md5.values(), metadata_path)
+    return len(records_by_md5)
+
+
+def parse_te_fragment_description(description: str) -> tuple[str, str]:
+    values: dict[str, str] = {}
+    for item in description.split():
+        if "=" not in item:
+            continue
+        key, value = item.split("=", 1)
+        values[key] = "" if value == "." else value
+    return values.get("family", ""), values.get("class", "")
+
+
+def summarize_te_label(values: set[str], first_value: str) -> str:
+    cleaned = sorted(value for value in values if value)
+    if not cleaned:
+        return ""
+    if len(cleaned) == 1:
+        return cleaned[0]
+    return "mixed" if first_value not in cleaned or len(cleaned) > 1 else first_value
+
+
+def write_deduplicated_te_fragment_metadata(entries: Iterable[DedupTEFragmentEntry], output: str | Path) -> None:
+    output_path = Path(output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("wt", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            delimiter="\t",
+            fieldnames=["md5", "representative_seq_id", "family", "class", "all_families", "all_classes", "source_count"],
+        )
+        writer.writeheader()
+        for entry in sorted(entries, key=lambda item: item.md5):
+            all_families = sorted(value for value in entry.all_families if value)
+            all_classes = sorted(value for value in entry.all_classes if value)
+            writer.writerow(
+                {
+                    "md5": entry.md5,
+                    "representative_seq_id": entry.representative_seq_id,
+                    "family": summarize_te_label(entry.all_families, entry.family),
+                    "class": summarize_te_label(entry.all_classes, entry.te_class),
+                    "all_families": ",".join(all_families),
+                    "all_classes": ",".join(all_classes),
+                    "source_count": entry.source_count,
+                }
+            )
 
 
 def run_makeblastdb(
@@ -967,6 +1065,8 @@ def run_classification_workflow(
         allele_path = Path(panpop_alleles_fasta) if panpop_alleles_fasta is not None else work_path / "panpop_alleles.fa"
         allele_index_path = work_path / "panpop_alleles.index.tsv"
         fragment_path = Path(te_fragments_fasta) if te_fragments_fasta is not None else work_path / "te_fragments.fa"
+        dedup_fragment_path = work_path / "te_fragments.dedup.fa"
+        dedup_metadata_path = work_path / "te_fragments.dedup.metadata.tsv"
         db_prefix = Path(blast_db_prefix) if blast_db_prefix is not None else work_path / "te_fragments_db"
         allele_index = write_panpop_te_alleles_and_index(
             panpop_vcf,
@@ -982,8 +1082,14 @@ def run_classification_workflow(
             min_length=min_te_fragment_length,
             line_width=fasta_line_width,
         )
+        write_deduplicated_te_fragments(
+            fragment_path,
+            dedup_fragment_path,
+            dedup_metadata_path,
+            line_width=fasta_line_width,
+        )
         run_makeblastdb(
-            fasta=fragment_path,
+            fasta=dedup_fragment_path,
             db_prefix=db_prefix,
             makeblastdb=makeblastdb,
             runner=runner,
@@ -1096,6 +1202,7 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
 
 
 

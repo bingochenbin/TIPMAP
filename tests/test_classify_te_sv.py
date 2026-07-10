@@ -12,6 +12,7 @@ from classify_te_sv import (
     classify_allele,
     iter_panpop_te_alleles,
     iter_te_fragments,
+    write_deduplicated_te_fragments,
     process_vcf_record_line,
     read_blast_hits,
     read_te_metadata,
@@ -126,6 +127,33 @@ class ClassifyTeSvTests(unittest.TestCase):
         self.assertEqual([hit.family for hit in hits], ["Gypsy", "TIR"])
         self.assertEqual([hit.metadata.attributes if hit.metadata else "" for hit in hits], ["ID=first", "ID=second"])
 
+    def test_write_deduplicated_te_fragments_uses_sequence_md5_and_summarizes_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            fragments = base / "te_fragments.fa"
+            dedup = base / "te_fragments.dedup.fa"
+            metadata = base / "te_fragments.dedup.metadata.tsv"
+            fragments.write_text(
+                ">frag1 family=Gypsy class=LTR strand=+ length=8\n"
+                "AACCGGTT\n"
+                ">frag2 family=Copia class=LTR strand=+ length=8\n"
+                "AACCGGTT\n"
+                ">frag3 family=TIR class=DNA strand=+ length=8\n"
+                "TTTTGGGG\n",
+                encoding="utf-8",
+            )
+
+            count = write_deduplicated_te_fragments(fragments, dedup, metadata)
+            records = list(iter_fasta(dedup))
+            metadata_lines = metadata.read_text(encoding="utf-8").strip().splitlines()
+
+        self.assertEqual(count, 2)
+        self.assertEqual(len(records), 2)
+        self.assertEqual({record.sequence for record in records}, {"AACCGGTT", "TTTTGGGG"})
+        self.assertIn("family\tclass\tall_families\tall_classes\tsource_count", metadata_lines[0])
+        self.assertTrue(any("mixed\tLTR\tCopia,Gypsy\tLTR\t2" in line for line in metadata_lines[1:]))
+        self.assertTrue(any("TIR\tDNA\tTIR\tDNA\t1" in line for line in metadata_lines[1:]))
+
     def test_process_multiallelic_ins_retains_only_te_alt_sequences(self) -> None:
         ref = "A"
         alt1 = "A" * 100
@@ -201,10 +229,13 @@ class ClassifyTeSvTests(unittest.TestCase):
             allele_fasta_exists = (workdir / "panpop_alleles.fa").is_file()
             te_fasta_exists = (workdir / "te_fragments.fa").is_file()
             blast_tsv_exists = (workdir / "panpop_allele_vs_te.tsv").is_file()
+            dedup_fasta_exists = (workdir / "te_fragments.dedup.fa").is_file()
+            dedup_metadata_exists = (workdir / "te_fragments.dedup.metadata.tsv").is_file()
             index_text = (workdir / "panpop_alleles.index.tsv").read_text(encoding="utf-8")
             report_text = report.read_text(encoding="utf-8")
 
         self.assertEqual(commands[0][0], "makeblastdb")
+        self.assertEqual(commands[0][commands[0].index("-in") + 1], str(workdir / "te_fragments.dedup.fa"))
         self.assertEqual(commands[0][commands[0].index("-out") + 1], str(workdir / "te_fragments_db"))
         self.assertEqual(commands[1][0], "blastn")
         self.assertEqual(commands[1][commands[1].index("-db") + 1], str(workdir / "te_fragments_db"))
@@ -215,6 +246,8 @@ class ClassifyTeSvTests(unittest.TestCase):
         self.assertEqual(report_count, 1)
         self.assertTrue(allele_fasta_exists)
         self.assertTrue(te_fasta_exists)
+        self.assertTrue(dedup_fasta_exists)
+        self.assertTrue(dedup_metadata_exists)
         self.assertTrue(blast_tsv_exists)
         self.assertEqual(data[0].split("\t")[9], "1/1")
         self.assertIn("TIP_TE_ALTS=1", data[0])
@@ -358,6 +391,7 @@ class ClassifyTeSvTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
 

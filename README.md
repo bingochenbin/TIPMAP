@@ -261,11 +261,12 @@ Internally, PanPop alleles are extracted for classification as:
 - `INS`: each PanPop ALT allele.
 - `DEL`: the PanPop REF allele once per record.
 
-The internal BLAST workflow builds a nucleotide database from extracted TE
-fragments, then runs BLASTN against that database with outfmt 6:
+The internal BLAST workflow extracts TE fragments, de-duplicates them by exact
+fragment sequence MD5, builds a nucleotide database from the non-redundant TE
+fragment library, then runs BLASTN against that database with outfmt 6:
 
 ```bash
-makeblastdb -in te_fragments.fa -dbtype nucl -out te_fragments_db
+makeblastdb -in te_fragments.dedup.fa -dbtype nucl -out te_fragments_db
 blastn -query panpop_alleles.fa \
   -db te_fragments_db \
   -evalue 1e-5 \
@@ -274,8 +275,10 @@ blastn -query panpop_alleles.fa \
   -outfmt "6 qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore"
 ```
 
-`classify_te_sv.py` also writes `panpop_alleles.index.tsv` in the workdir so
-PanPop allele MD5 values can be reused while rewriting the TIP-map VCF.
+`classify_te_sv.py` also writes `panpop_alleles.index.tsv`,
+`te_fragments.dedup.fa`, and `te_fragments.dedup.metadata.tsv` in the workdir.
+The deduplicated TE metadata keeps family/class summaries for each unique TE
+fragment sequence while avoiding redundant BLAST subjects.
 
 If BLASTN was already run separately, reuse it with `--blast-tsv`:
 
