@@ -249,7 +249,8 @@ python classify_te_sv.py \
   --output-vcf panpop.tip.vcf \
   --allele-report panpop.tip_alleles.tsv \
   --workdir tipmap_classify_work \
-  --blast-threads 16 \
+  --blast-workers 16 \
+  --blast-threads 4 \
   --blast-evalue 1e-5 \
   --min-te-coverage 0.60 \
   --min-identity 80 \
@@ -263,22 +264,25 @@ Internally, PanPop alleles are extracted for classification as:
 
 The internal BLAST workflow extracts TE fragments, de-duplicates them by exact
 fragment sequence MD5, builds a nucleotide database from the non-redundant TE
-fragment library, then runs BLASTN against that database with outfmt 6:
+fragment library, de-duplicates PanPop allele queries by exact allele sequence
+MD5, then splits the query FASTA across parallel BLASTN workers:
 
 ```bash
 makeblastdb -in te_fragments.dedup.fa -dbtype nucl -out te_fragments_db
-blastn -query panpop_alleles.fa \
+blastn -query panpop_alleles.dedup.part001.fa \
   -db te_fragments_db \
+  -dust no \
   -evalue 1e-5 \
-  -num_threads 16 \
-  -out panpop_allele_vs_te.tsv \
+  -num_threads 4 \
+  -out panpop_allele_vs_te.part001.tsv \
   -outfmt "6 qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore"
 ```
 
 `classify_te_sv.py` also writes `panpop_alleles.index.tsv`,
-`te_fragments.dedup.fa`, and `te_fragments.dedup.metadata.tsv` in the workdir.
-The deduplicated TE metadata keeps family/class summaries for each unique TE
-fragment sequence while avoiding redundant BLAST subjects.
+`panpop_alleles.dedup.fa`, `te_fragments.dedup.fa`, and
+`te_fragments.dedup.metadata.tsv` in the workdir. The deduplicated TE metadata
+keeps family/class summaries for each unique TE fragment sequence while avoiding
+redundant BLAST subjects.
 
 If BLASTN was already run separately, reuse it with `--blast-tsv`:
 

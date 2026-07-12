@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 import re
@@ -153,7 +154,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--makeblastdb", default="makeblastdb", help="makeblastdb executable path. Default: makeblastdb.")
     parser.add_argument("--blast-db-prefix", help="Optional BLAST database prefix. Default: <workdir>/te_fragments_db.")
     parser.add_argument("--blastn", default="blastn", help="blastn executable path. Default: blastn.")
-    parser.add_argument("--blast-threads", type=int, default=1, help="Threads passed to blastn -num_threads. Default: 1.")
+    parser.add_argument("--blast-workers", type=int, default=1, help="Number of parallel blastn processes. Default: 1.")
+    parser.add_argument("--blast-threads", type=int, default=1, help="Threads passed to each blastn -num_threads. Default: 1.")
     parser.add_argument("--blast-evalue", type=float, default=1e-5, help="Maximum BLASTN e-value. Default: 1e-5.")
     parser.add_argument(
         "--blast-arg",
@@ -464,6 +466,128 @@ def write_deduplicated_te_fragment_metadata(entries: Iterable[DedupTEFragmentEnt
             )
 
 
+def write_deduplicated_query_fasta(
+    input_fasta: str | Path,
+    output_fasta: str | Path,
+    *,
+    line_width: int = 80,
+) -> int:
+    """Write one PanPop allele query per unique allele sequence MD5."""
+
+    output_path = Path(output_fasta)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    seen_md5: set[str] = set()
+    records: list[FastaRecord] = []
+    for record in iter_fasta(input_fasta):
+        md5 = sequence_md5(record.sequence)
+        if md5 in seen_md5:
+            continue
+        seen_md5.add(md5)
+        records.append(record)
+    with output_path.open("wt", encoding="utf-8", newline="\n") as handle:
+        for record in records:
+            write_fasta_records([record], handle, line_width=line_width)
+    return len(records)
+
+
+def split_fasta_records(
+    input_fasta: str | Path,
+    output_dir: str | Path,
+    *,
+    chunks: int,
+    prefix: str,
+    line_width: int = 80,
+) -> list[Path]:
+    if chunks < 1:
+        msg = "chunks must be >= 1"
+        raise ValueError(msg)
+    records = list(iter_fasta(input_fasta))
+    if not records:
+        return []
+    chunk_count = min(chunks, len(records))
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    handles = []
+    paths = [output_path / ("%s.part%03d.fa" % (prefix, index + 1)) for index in range(chunk_count)]
+    try:
+        handles = [path.open("wt", encoding="utf-8", newline="\n") for path in paths]
+        for index, record in enumerate(records):
+            write_fasta_records([record], handles[index % chunk_count], line_width=line_width)
+    finally:
+        for handle in handles:
+            handle.close()
+    return paths
+
+
+def merge_blast_outputs(parts: Sequence[str | Path], output: str | Path) -> None:
+    output_path = Path(output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("wt", encoding="utf-8", newline="") as out_handle:
+        for part in parts:
+            part_path = Path(part)
+            if not part_path.exists():
+                continue
+            with part_path.open("rt", encoding="utf-8") as in_handle:
+                for line in in_handle:
+                    out_handle.write(line)
+
+
+def run_parallel_blastn(
+    *,
+    query_fasta: str | Path,
+    blast_db: str | Path,
+    output: str | Path,
+    workdir: str | Path,
+    blastn: str = "blastn",
+    blast_workers: int = 1,
+    blast_threads: int = 1,
+    blast_evalue: float = 1e-5,
+    extra_args: Sequence[str] = (),
+    line_width: int = 80,
+    runner: CommandRunner | None = None,
+) -> Path:
+    if blast_workers < 1:
+        msg = "blast_workers must be >= 1"
+        raise ValueError(msg)
+    output_path = Path(output)
+    if blast_workers == 1:
+        return run_blastn(
+            query_fasta=query_fasta,
+            blast_db=blast_db,
+            output=output_path,
+            blastn=blastn,
+            blast_threads=blast_threads,
+            blast_evalue=blast_evalue,
+            extra_args=extra_args,
+            runner=runner,
+        )
+    split_dir = Path(workdir) / "blast_query_parts"
+    part_fastas = split_fasta_records(query_fasta, split_dir, chunks=blast_workers, prefix="panpop_alleles.dedup", line_width=line_width)
+    if not part_fastas:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text("", encoding="utf-8")
+        return output_path
+    part_outputs = [split_dir / (path.stem + ".blast.tsv") for path in part_fastas]
+
+    def submit(pair: tuple[Path, Path]) -> Path:
+        part_fasta, part_output = pair
+        return run_blastn(
+            query_fasta=part_fasta,
+            blast_db=blast_db,
+            output=part_output,
+            blastn=blastn,
+            blast_threads=blast_threads,
+            blast_evalue=blast_evalue,
+            extra_args=extra_args,
+            runner=runner,
+        )
+
+    with ThreadPoolExecutor(max_workers=min(blast_workers, len(part_fastas))) as executor:
+        list(executor.map(submit, zip(part_fastas, part_outputs)))
+    merge_blast_outputs(part_outputs, output_path)
+    return output_path
+
+
 def run_makeblastdb(
     *,
     fasta: str | Path,
@@ -510,6 +634,8 @@ def run_blastn(
         str(output_path),
         "-outfmt",
         BLAST_OUTFMT,
+        "-dust",
+        "no",
         "-evalue",
         str(blast_evalue),
         "-num_threads",
@@ -1041,6 +1167,7 @@ def run_classification_workflow(
     makeblastdb: str = "makeblastdb",
     blast_db_prefix: str | Path | None = None,
     blastn: str = "blastn",
+    blast_workers: int = 1,
     blast_threads: int = 1,
     blast_evalue: float = 1e-5,
     blast_args: Sequence[str] = (),
@@ -1063,6 +1190,7 @@ def run_classification_workflow(
             msg = "--sv-fasta and --te-annotations are required when --blast-tsv is not provided"
             raise ValueError(msg)
         allele_path = Path(panpop_alleles_fasta) if panpop_alleles_fasta is not None else work_path / "panpop_alleles.fa"
+        dedup_allele_path = work_path / "panpop_alleles.dedup.fa"
         allele_index_path = work_path / "panpop_alleles.index.tsv"
         fragment_path = Path(te_fragments_fasta) if te_fragments_fasta is not None else work_path / "te_fragments.fa"
         dedup_fragment_path = work_path / "te_fragments.dedup.fa"
@@ -1082,6 +1210,11 @@ def run_classification_workflow(
             min_length=min_te_fragment_length,
             line_width=fasta_line_width,
         )
+        write_deduplicated_query_fasta(
+            allele_path,
+            dedup_allele_path,
+            line_width=fasta_line_width,
+        )
         write_deduplicated_te_fragments(
             fragment_path,
             dedup_fragment_path,
@@ -1094,14 +1227,17 @@ def run_classification_workflow(
             makeblastdb=makeblastdb,
             runner=runner,
         )
-        run_blastn(
-            query_fasta=allele_path,
+        run_parallel_blastn(
+            query_fasta=dedup_allele_path,
             blast_db=db_prefix,
             output=blast_path,
+            workdir=work_path,
             blastn=blastn,
+            blast_workers=blast_workers,
             blast_threads=blast_threads,
             blast_evalue=blast_evalue,
             extra_args=blast_args,
+            line_width=fasta_line_width,
             runner=runner,
         )
 
@@ -1185,6 +1321,7 @@ def main() -> int:
             makeblastdb=args.makeblastdb,
             blast_db_prefix=args.blast_db_prefix,
             blastn=args.blastn,
+            blast_workers=args.blast_workers,
             blast_threads=args.blast_threads,
             blast_evalue=args.blast_evalue,
             blast_args=args.blast_arg,
